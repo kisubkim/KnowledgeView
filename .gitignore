@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# 실행 데이터: 설정(API 키 포함 가능), 업로드한 MD, 생성한 HTML
+data/
+output/
+# 빌드 산출물
+build/
+dist/
+*.spec
+knowledgeview.json

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KnowledgeView</title>
+<script>(function(){try{var t=localStorage.getItem("kv-theme");if(!t)t=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";document.documentElement.dataset.theme=t}catch(e){}})();</script>
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="#/library"><span class="logo">K</span>KnowledgeView</a>
+  <nav class="tabs">
+    <a href="#/library" data-tab="library">문서</a>
+    <a href="#/generate" data-tab="generate">생성</a>
+    <a href="#/jobs" data-tab="jobs">작업 <span class="pill" id="jobs-active" hidden></span></a>
+    <a href="#/settings" data-tab="settings">설정</a>
+  </nav>
+  <button type="button" class="btn ghost" id="theme" title="밝게/어둡게">◐</button>
+  <button type="button" class="btn" id="quit" hidden title="KnowledgeView 종료 또는 트레이로 보내기">종료</button>
+</header>
+<main id="view"></main>
+<div class="toast" id="toast"></div>
+<dialog id="dlg"><form method="dialog" id="dlg-form"><h3 id="dlg-title"></h3><div id="dlg-body"></div><div class="dlg-actions"><button value="cancel" class="btn">취소</button><button value="ok" class="btn primary" id="dlg-ok">확인</button></div></form></dialog>
+<script src="/assets/app.js"></script>
+</body>
+</html>

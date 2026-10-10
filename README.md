@@ -70,6 +70,22 @@ start.bat      :: http://localhost:8770/  (기본 0.0.0.0 바인딩, 다른 PC�
 
 페이지를 덮어쓰면(재생성, 같은 카테고리에 다시 생성) 기존 파일은 새 페이지가 완성된 뒤 `output/.history/<카테고리>/<문서명>/<시각>.html`로 옮겨집니다. 생성이 실패하거나 취소되면 기존 페이지는 그대로입니다. 문서 카드의 "이전 버전"에서 열기, 복원(현재 페이지는 이력으로), 삭제를 할 수 있습니다. 페이지당 보관 개수는 설정의 "보관할 이전 버전 수"(기본 20, 0이면 모두)입니다. 페이지를 이동하면 이력도 함께 옮겨지고, 페이지나 카테고리를 삭제하면 이력도 함께 삭제됩니다.
 
+## 라이선스
+
+KnowledgeView는 [MIT 라이선스](LICENSE)입니다. MIT로 배포할 수 있는지 의존성을 확인한 결과는 다음과 같습니다.
+
+| 구분 | 내용 | MIT와의 관계 |
+|---|---|---|
+| 이 저장소의 코드 | 이 프로젝트에서 작성. `knowledgeview/desktop/single_instance.py`는 같은 작업 공간의 TokenChecker(MIT)에서 가져옴 | 문제 없음 |
+| 저장소에 포함된 서드파티 | mermaid 11.17.2(MIT), 라이선스 전문 `knowledgeview/static/vendor/mermaid.LICENSE` | 문제 없음 |
+| pip로 설치하는 라이브러리 | FastAPI, uvicorn, Jinja2, markdown-it-py, Pygments, httpx, truststore 등: MIT, BSD, Apache-2.0, MPL-2.0(certifi) | 저장소에 포함하지 않음. 모두 MIT 프로젝트에서 쓸 수 있는 허용형 라이선스 |
+| 설치형 exe에 들어가는 라이브러리 | 위 라이브러리와 Python(PSF), Pillow(MIT-CMU), pystray(**LGPL-3.0**), PyInstaller 부트로더(GPL + 예외 조항) | pystray는 수정 없이 쓰고 사용자가 다른 버전으로 바꿔 빌드할 수 있으면 됨(소스와 `build.ps1` 공개로 충족). certifi(MPL-2.0)도 수정 없이 포함. 부트로더는 예외 조항으로 배포 제한 없음. 자세한 내용은 `THIRD_PARTY_NOTICES.md` |
+| 쓰지 않는 것 | PyMuPDF 등 GPL/AGPL 라이브러리 | 없음 |
+
+- 생성된 HTML 페이지 안의 Wikimedia Commons 그림은 MIT가 아니라 각 그림의 라이선스(CC0, 퍼블릭 도메인, CC BY, CC BY-SA)를 따릅니다. 출처와 라이선스는 그림 캡션과 "그림 내보내기"의 `그림_목록.md`에 남습니다. 페이지를 배포할 때는 이 표시를 지우지 마세요.
+- Claude Code CLI는 함께 배포하지 않고, 사용자의 PC에 설치된 것을 호출만 합니다.
+- MIT를 유지하려면 GPL/AGPL 라이브러리를 의존성에 추가하지 마세요(LGPL은 pystray처럼 수정 없이 교체 가능한 형태로만).
+
 ## 서드파티
 
 - 그림: Wikimedia Commons 이미지는 각 파일의 라이선스를 따르며, 페이지 캡션에 출처가 표시됩니다

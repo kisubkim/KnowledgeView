@@ -1,6 +1,6 @@
 # Third-party notices
 
-KnowledgeView 실행 파일(`KnowledgeView-Setup.exe`)과 웹 화면에 포함된 구성요소입니다. 각 구성요소는 자기 라이선스를 따릅니다.
+KnowledgeView 자체는 [MIT 라이선스](LICENSE)입니다. 아래는 실행 파일(`KnowledgeView-Setup.exe`)과 웹 화면에 포함된 구성요소이며, 각 구성요소는 자기 라이선스를 따릅니다.
 
 ## 웹 화면 / 페이지 런타임
 

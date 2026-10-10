@@ -20,7 +20,7 @@ if ($LASTEXITCODE -ne 0) { throw "icon generation failed" }
     --name KnowledgeView-Setup --icon build\app.ico `
     --add-data "knowledgeview\static;knowledgeview\static" `
     --add-data "knowledgeview\templates;knowledgeview\templates" `
-    --add-data "THIRD_PARTY_NOTICES.md;." `
+    --add-data "LICENSE;." --add-data "THIRD_PARTY_NOTICES.md;." `
     --hidden-import pystray._win32 `
     --collect-submodules uvicorn `
     --collect-submodules pygments.lexers `

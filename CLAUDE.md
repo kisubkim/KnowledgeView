@@ -61,6 +61,8 @@ Other modules:
 
 ## Conventions
 
+- License: MIT (`LICENSE`; the dependency review is in README "라이선스"). Don't add GPL/AGPL dependencies; LGPL only unmodified and replaceable (like pystray). Record new bundled components in `THIRD_PARTY_NOTICES.md`.
+
 - UI strings, docs and commit messages are Korean; code comments are English.
 - Generated pages must stay single files: put new page CSS/JS in `page.html.j2`; put new heavy libraries under `static/vendor/` (record version and license in README) and load them from `asset_base`, never from a CDN.
 - `mermaid.min.js` is pinned (11.17.2, MIT). After a template change, existing pages only change after 재생성.

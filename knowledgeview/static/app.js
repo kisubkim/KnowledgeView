@@ -303,30 +303,83 @@
   }
 
   // ---------------------------------------------------------------- jobs
+  // The list is updated in place (no innerHTML rebuild on each poll): rebuilding reset the
+  // log boxes' own scroll position to the top every 1.5 s and dropped text selections.
   const openLogs = new Set();
-  async function renderJobs() {
-    const { jobs } = await api("GET", "/api/jobs");
-    const st = { queued: "대기", running: "진행 중", done: "완료", failed: "실패", cancelled: "취소" };
-    const badge = { queued: "", running: "llm", done: "ok", failed: "err", cancelled: "warn" };
-    const scrollY = window.scrollY;
-    view.innerHTML = `<div class="panel"><div class="row"><h2 class="grow" style="margin:0">작업</h2><button class="btn sm" id="clear">끝난 작업 지우기</button></div></div>` +
-      (jobs.length ? jobs.map((j) => {
-        const pct = j.status === "done" ? 100 : j.total ? Math.round((j.done / j.total) * 100) : 0;
-        const href = j.result ? "/view/" + j.result.rel.split("/").map(encodeURIComponent).join("/") : "";
-        return `<div class="job ${j.status}">
-          <div class="row"><span class="badge ${badge[j.status]}">${st[j.status]}</span><b class="grow">${esc(j.source)}</b>
-            <span class="hint">→ ${esc(catLabel(j.category))} · ${esc(modeShort(j.mode))}</span>
-            ${href ? `<a class="btn sm primary" href="${href}">열기</a>` : ""}
-            ${["queued", "running"].includes(j.status) ? `<button class="btn sm danger" data-cancel="${j.id}">취소</button>` : ""}
-            <button class="btn sm" data-log="${j.id}">로그</button></div>
-          <div class="bar"><i style="width:${pct}%"></i></div>
-          <div class="hint">${esc(j.message)}${j.total ? ` (${j.done}/${j.total})` : ""} · ${esc(fmtTime(j.created_at))}</div>
-          ${openLogs.has(j.id) ? `<pre>${esc(j.log.join("\n"))}</pre>` : ""}</div>`;
-      }).join("") : '<div class="panel empty">작업이 없습니다.</div>');
-    window.scrollTo(0, scrollY);
-    $("#clear").onclick = async () => { await api("DELETE", "/api/jobs"); renderJobs(); };
-    $$("[data-cancel]").forEach((b) => (b.onclick = async () => { try { await api("POST", `/api/jobs/${b.dataset.cancel}/cancel`); renderJobs(); } catch (e) { toast(e.message, true); } }));
-    $$("[data-log]").forEach((b) => (b.onclick = () => { const id = b.dataset.log; openLogs.has(id) ? openLogs.delete(id) : openLogs.add(id); renderJobs(); }));
+  const JOB_STATUS = { queued: "대기", running: "진행 중", done: "완료", failed: "실패", cancelled: "취소" };
+  const JOB_BADGE = { queued: "", running: "llm", done: "ok", failed: "err", cancelled: "warn" };
+
+  function jobHeadHtml(j) {
+    const href = j.result ? "/view/" + j.result.rel.split("/").map(encodeURIComponent).join("/") : "";
+    return `<span class="badge ${JOB_BADGE[j.status]}">${JOB_STATUS[j.status]}</span><b class="grow">${esc(j.source)}</b>
+      <span class="hint">→ ${esc(catLabel(j.category))} · ${esc(modeShort(j.mode))}</span>
+      ${href ? `<a class="btn sm primary" href="${href}">열기</a>` : ""}
+      ${["queued", "running"].includes(j.status) ? `<button class="btn sm danger" data-cancel="${j.id}">취소</button>` : ""}
+      <button class="btn sm" data-log="${j.id}" aria-pressed="${openLogs.has(j.id)}">로그</button>`;
+  }
+
+  function setHtml(el, html) { if (el._html !== html) { el.innerHTML = html; el._html = html; } }
+
+  function updateJobBox(box, j) {
+    box.className = "job " + j.status;
+    setHtml(box.querySelector(".job-head"), jobHeadHtml(j));
+    const pct = j.status === "done" ? 100 : j.total ? Math.round((j.done / j.total) * 100) : 0;
+    box.querySelector(".bar i").style.width = pct + "%";
+    setHtml(box.querySelector(".job-msg"), `${esc(j.message)}${j.total ? ` (${j.done}/${j.total})` : ""} · ${esc(fmtTime(j.created_at))}`);
+    let pre = box.querySelector("pre");
+    if (!openLogs.has(j.id)) { if (pre) pre.remove(); return; }
+    const text = j.log.join("\n");
+    if (!pre) {
+      pre = document.createElement("pre");
+      box.appendChild(pre);
+      pre.textContent = text;
+      pre.scrollTop = pre.scrollHeight;  // newly opened: show the latest lines
+      return;
+    }
+    if (pre.textContent === text) return;
+    // Follow new lines only when the reader is already at the bottom; otherwise keep their place.
+    const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 8;
+    const top = pre.scrollTop;
+    pre.textContent = text;
+    pre.scrollTop = atBottom ? pre.scrollHeight : top;
+  }
+
+  async function renderJobs(jobs) {
+    if (!jobs) jobs = (await api("GET", "/api/jobs")).jobs;
+    let list = $("#job-list");
+    if (!list) {
+      view.innerHTML = `<div class="panel"><div class="row"><h2 class="grow" style="margin:0">작업</h2><button class="btn sm" id="clear">끝난 작업 지우기</button></div></div>
+        <div id="job-list"></div><div class="panel empty" id="job-empty" hidden>작업이 없습니다.</div>`;
+      list = $("#job-list");
+      $("#clear").onclick = async () => { await api("DELETE", "/api/jobs"); renderJobs(); };
+      list.addEventListener("click", async (e) => {
+        const cancel = e.target.closest("[data-cancel]"), log = e.target.closest("[data-log]");
+        if (cancel) {
+          try { await api("POST", `/api/jobs/${cancel.dataset.cancel}/cancel`); renderJobs(); } catch (err) { toast(err.message, true); }
+        } else if (log) {
+          const id = log.dataset.log;
+          openLogs.has(id) ? openLogs.delete(id) : openLogs.add(id);
+          renderJobs();
+        }
+      });
+    }
+    const keep = new Set(jobs.map((j) => j.id));
+    $$(".job", list).forEach((box) => { if (!keep.has(box.dataset.job)) box.remove(); });
+    let prev = null;
+    jobs.forEach((j) => {
+      let box = list.querySelector(`.job[data-job="${j.id}"]`);
+      if (!box) {
+        box = document.createElement("div");
+        box.dataset.job = j.id;
+        box.innerHTML = '<div class="row job-head"></div><div class="bar"><i></i></div><div class="hint job-msg"></div>';
+      }
+      // Keep the server's order (newest first) without moving boxes that are already in place.
+      const want = prev ? prev.nextSibling : list.firstChild;
+      if (want !== box) list.insertBefore(box, want);
+      updateJobBox(box, j);
+      prev = box;
+    });
+    $("#job-empty").hidden = jobs.length > 0;
     return jobs;
   }
 
@@ -335,7 +388,7 @@
       const { jobs } = await fetch("/api/jobs").then((r) => r.json());
       const active = jobs.filter((j) => j.status === "queued" || j.status === "running").length;
       const pill = $("#jobs-active"); pill.hidden = !active; pill.textContent = active;
-      if (currentTab() === "jobs") await renderJobs();
+      if (currentTab() === "jobs") await renderJobs(jobs);
       clearTimeout(pollTimer);
       pollTimer = setTimeout(pollJobs, active || currentTab() === "jobs" ? 1500 : 5000);
     } catch (e) { pollTimer = setTimeout(pollJobs, 5000); }

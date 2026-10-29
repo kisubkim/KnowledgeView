@@ -24,7 +24,8 @@ APP_ROOT = Path(sys.executable).resolve().parent if FROZEN else PACKAGE_DIR.pare
 INSTALL_CONFIG_NAME = "knowledgeview.json"
 DEFAULT_PORT = 8770
 
-BASE_MODES = ("none", "claude_cli")
+BASE_MODES = ("none", "claude_cli", "codex_cli")
+CODEX_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 OPENAI_PREFIX = "openai:"  # mode id of an OpenAI-compatible endpoint: "openai:<endpoint id>"
 
 DEFAULTS: dict[str, Any] = {
@@ -44,6 +45,13 @@ DEFAULTS: dict[str, Any] = {
     "claude": {
         "command": "claude",
         "model": "",
+        "timeout_s": 300,
+        "concurrency": 3,
+    },
+    "codex": {
+        "command": "codex",
+        "model": "",
+        "reasoning_effort": "",
         "timeout_s": 300,
         "concurrency": 3,
     },
@@ -114,6 +122,8 @@ def mode_label(mode: str, data: dict | None = None) -> str:
         return "구조화 (LLM 없음)"
     if mode == "claude_cli":
         return "Claude Code CLI 상세화"
+    if mode == "codex_cli":
+        return "Codex CLI 상세화"
     ep = endpoint_for(mode, data or {})
     return f"OpenAI 호환 상세화 ({ep['name']})" if ep else "OpenAI 호환 상세화"
 
@@ -226,6 +236,15 @@ class Settings:
         with self._lock:
             patch = copy.deepcopy(patch)
             new = _merge(self._data, patch)
+            if not isinstance(new["codex"], dict):
+                raise ValueError("Codex 설정 형식이 잘못되었습니다.")
+            codex = new["codex"]
+            if codex.get("reasoning_effort", "") not in ("", *CODEX_EFFORTS):
+                raise ValueError("지원하지 않는 Codex 추론 강도입니다.")
+            if not 1 <= int(codex.get("concurrency", 3)) <= 8:
+                raise ValueError("Codex 동시 호출 수는 1~8 사이여야 합니다.")
+            if float(codex.get("timeout_s", 300)) <= 0:
+                raise ValueError("Codex 제한 시간은 0보다 커야 합니다.")
             if isinstance(patch.get("openai_endpoints"), list):
                 new["openai_endpoints"] = _normalize_endpoints(patch["openai_endpoints"], self._data["openai_endpoints"])
             if new["default_mode"] not in mode_ids(new):

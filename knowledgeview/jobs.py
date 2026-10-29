@@ -17,7 +17,7 @@ MAX_KEPT = 300
 
 class Job:
     def __init__(self, *, source_path: Path, source_root: Path, source_label: str, category: str, mode: str,
-                 refresh: bool = False):
+                 refresh: bool = False, output_rel: str | None = None):
         self.id = uuid.uuid4().hex[:12]
         self.source_path = source_path
         self.source_root = source_root
@@ -25,6 +25,7 @@ class Job:
         self.category = category
         self.mode = mode
         self.refresh = refresh  # ignore cached LLM results
+        self.output_rel = output_rel
         self.status = "queued"  # queued | running | done | failed | cancelled
         self.done = 0
         self.total = 0

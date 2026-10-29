@@ -2,7 +2,7 @@
 
 Modes:
 - ``none``: no LLM; the source is restructured by the template only.
-- ``claude_cli`` / ``openai:<endpoint id>``: each level-2 section is enriched separately (callouts added
+- ``claude_cli`` / ``codex_cli`` / ``openai:<endpoint id>``: each level-2 section is enriched separately (callouts added
   around the untouched original), plus one whole-document call for the overview.
   A section whose LLM output fails validation falls back to the original text.
 """
@@ -10,6 +10,7 @@ Modes:
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import posixpath
 import re
@@ -22,7 +23,7 @@ from typing import Callable
 from . import cache as cache_mod
 from . import figures, mdparse, prompts
 from .config import endpoint_for, mode_label
-from .library import archive_page, clean_rel, default_category, join_inside, read_meta, sha256_of
+from .library import PathError, archive_page, clean_rel, default_category, join_inside, read_meta, sha256_of
 from .llm import Cancelled, LLMClient, LLMError, make_client
 from .mdparse import Document, iter_unfenced
 from .render import build_page
@@ -134,7 +135,48 @@ def _skip(heading: str, skip_headings: list[str]) -> bool:
     return any(k and k.lower() in heading.lower() for k in skip_headings)
 
 
-def make_link_resolver(source_path: Path, source_root: Path, out_rel: PurePosixPath):
+def _mode_key(mode: str | None, settings: dict) -> str:
+    if not mode:
+        return ""
+    ep = endpoint_for(mode, settings)
+    return "openai:" + ep["id"] if ep else mode
+
+
+def find_mode_page(output_dir: Path, category: PurePosixPath, source_path: Path, mode: str,
+                   settings: dict) -> PurePosixPath | None:
+    """Find a current page of this source and mode, including legacy or moved filenames."""
+    folder = join_inside(output_dir, category)
+    for page in sorted(folder.glob("*.html")):
+        meta = read_meta(page)
+        src = meta.get("source_path")
+        if (src and Path(src).resolve() == source_path.resolve()
+                and _mode_key(meta.get("mode"), settings) == _mode_key(mode, settings)):
+            return category / page.name
+    return None
+
+
+def output_page_rel(output_dir: Path, category: PurePosixPath, source_path: Path, mode: str,
+                    settings: dict) -> PurePosixPath:
+    existing = find_mode_page(output_dir, category, source_path, mode, settings)
+    if existing:
+        return existing
+    canonical = category / (source_path.stem + ".html")
+    if not join_inside(output_dir, canonical).exists():
+        return canonical
+    suffix = {"none": "structured", "claude_cli": "claude", "codex_cli": "codex"}.get(mode)
+    if not suffix:
+        suffix = "openai-" + hashlib.sha256(_mode_key(mode, settings).encode()).hexdigest()[:12]
+    candidate = category / f"{source_path.stem}--{suffix}.html"
+    # A different source can have the same stem or the literal '--codex' suffix.
+    number = 2
+    while join_inside(output_dir, candidate).exists():
+        candidate = category / f"{source_path.stem}--{suffix}-{number}.html"
+        number += 1
+    return candidate
+
+
+def make_link_resolver(source_path: Path, source_root: Path, out_rel: PurePosixPath,
+                       *, output_dir: Path | None = None, mode: str = "none", settings: dict | None = None):
     """Map links to other .md files in the same source root to their mirrored output page."""
     root = source_root.resolve()
 
@@ -145,6 +187,8 @@ def make_link_resolver(source_path: Path, source_root: Path, out_rel: PurePosixP
             return None
         trel = target.relative_to(root).as_posix()
         dest = PurePosixPath(default_category(trel)) / (target.stem + ".html")
+        if output_dir is not None:
+            dest = find_mode_page(output_dir, dest.parent, target, mode, settings or {}) or dest
         link = posixpath.relpath(dest.as_posix(), out_rel.parent.as_posix() or ".")
         return link + (f"#{frag}" if frag else "")
 
@@ -164,11 +208,20 @@ def generate(
     client: LLMClient | None = None,
     failures_dir: Path | None = None,
     cache: cache_mod.Cache | None = None,
+    output_rel: str | None = None,
 ) -> dict:
     cancel = cancel or threading.Event()
     cat = clean_rel(category)
-    out_rel = cat / (source_path.stem + ".html")
+    out_rel = clean_rel(output_rel, allow_empty=False) if output_rel else output_page_rel(
+        output_dir, cat, source_path, mode, settings)
     out_path = join_inside(output_dir, out_rel)
+    if out_rel.parent != cat or out_rel.suffix.lower() != ".html":
+        raise PathError("출력 페이지의 카테고리 또는 확장자가 잘못되었습니다.")
+    if out_path.exists():
+        previous = read_meta(out_path)
+        if (not previous.get("source_path") or Path(previous["source_path"]).resolve() != source_path.resolve()
+                or _mode_key(previous.get("mode"), settings) != _mode_key(mode, settings)):
+            raise PathError("다른 원본 또는 생성 방식의 페이지는 덮어쓸 수 없습니다.")
 
     text = source_path.read_text(encoding="utf-8-sig", errors="replace")
     doc = mdparse.parse(text, fallback_title=source_path.stem)
@@ -179,14 +232,20 @@ def generate(
     fig_counts: dict[str, int] = {}
     cache = cache or cache_mod.Cache(None)
     model = ""
+    reasoning_effort = ""
 
     if mode == "none":
         progress(0, 1, "페이지 구성 중")
         overview = heuristic_overview(doc)
     else:
         client = client or make_client(mode, settings, cancel)
-        model = client.model or ("기본 모델" if mode == "claude_cli" else "")
-        cfg = settings.get("claude", {}) if mode == "claude_cli" else (endpoint_for(mode, settings) or {})
+        model = client.model or ("기본 모델" if mode in ("claude_cli", "codex_cli") else "")
+        reasoning_effort = getattr(client, "reasoning_effort", "") if mode == "codex_cli" else ""
+        cache_model = {"model": client.model, "reasoning_effort": reasoning_effort} if mode == "codex_cli" else client.model
+        if mode in ("claude_cli", "codex_cli"):
+            cfg = settings.get("claude" if mode == "claude_cli" else "codex", {})
+        else:
+            cfg = endpoint_for(mode, settings) or {}
         workers = max(1, int(cfg.get("concurrency") or 1))
         targets = [i for i, s in enumerate(doc.sections) if not _skip(s.heading, settings.get("skip_headings", []))]
         total = len(targets) + 1
@@ -211,7 +270,7 @@ def generate(
             sec = doc.sections[i]
             user = prompts.SECTION_USER.format(title=doc.title, outline=_outline(doc), index=i + 1,
                                                total=len(doc.sections), section=sec.markdown)
-            ckey = cache_mod.key("section", mode, client.model, section_system, user)
+            ckey = cache_mod.key("section", mode, cache_model, section_system, user)
             cached = cache.get("sections", ckey)
             if isinstance(cached, str):
                 sections_md[i] = cached
@@ -245,7 +304,7 @@ def generate(
         def do_overview() -> None:
             nonlocal overview
             user = prompts.OVERVIEW_USER.format(doc=mdparse.join(doc)[:OVERVIEW_MAX_CHARS])
-            ckey = cache_mod.key("overview", mode, client.model, prompts.OVERVIEW_SYSTEM, user)
+            ckey = cache_mod.key("overview", mode, cache_model, prompts.OVERVIEW_SYSTEM, user)
             cached = cache.get("overview", ckey)
             if isinstance(cached, dict):
                 overview = cached
@@ -285,7 +344,7 @@ def generate(
             progress(done, total, f"그림 {len(todo)}개 준비 (웹 검색 → 없으면 SVG)")
 
         def do_figure(i: int, n: int, req: figures.FigureRequest) -> None:
-            fkey = cache_mod.key("figure", mode, client.model, req.as_dict(), bool(img_cfg.get("web_search")),
+            fkey = cache_mod.key("figure", mode, cache_model, req.as_dict(), bool(img_cfg.get("web_search")),
                                  bool(img_cfg.get("svg_fallback")), prompts.FIGURE_PICK_SYSTEM, prompts.FIGURE_SVG_SYSTEM)
             fig = cache.get("figures", fkey)
             from_cache = isinstance(fig, dict)
@@ -331,6 +390,7 @@ def generate(
         "mode": mode,
         "mode_label": mode_label(mode, settings),
         "model": model,
+        "reasoning_effort": reasoning_effort,
         "category": cat.as_posix().strip("."),
         "source_path": str(source_path),
         "source_root": str(source_root),
@@ -342,7 +402,8 @@ def generate(
     page = build_page(
         doc, sections_md, info=info, overview=overview, section_flags=flags,
         source_dir=source_path.parent,
-        link_resolver=make_link_resolver(source_path, source_root, out_rel),
+        link_resolver=make_link_resolver(source_path, source_root, out_rel, output_dir=output_dir,
+                                         mode=mode, settings=settings),
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = out_path.with_name(out_path.name + ".tmp")
@@ -350,9 +411,6 @@ def generate(
     # The page being replaced goes to <out>/.history/ (only now, after the new page is ready).
     archived = None
     if out_path.is_file():
-        prev_src = read_meta(out_path).get("source_path")
-        if prev_src and Path(prev_src) != source_path:
-            warnings.append(f"다른 원본({prev_src})으로 만든 같은 이름의 페이지를 대체했습니다. 이전 파일은 이력에 있습니다.")
         archived = archive_page(output_dir, out_rel, keep=int(settings.get("history_keep") or 0))
     os.replace(tmp, out_path)
     return {"rel": out_rel.as_posix(), "warnings": warnings, "archived": archived}

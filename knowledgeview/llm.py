@@ -1,4 +1,4 @@
-"""LLM backends: the local Claude Code CLI (``claude -p``) or an OpenAI-compatible endpoint."""
+"""LLM backends: local Claude Code/Codex CLIs or an OpenAI-compatible endpoint."""
 
 from __future__ import annotations
 
@@ -7,10 +7,11 @@ import shutil
 import subprocess
 import tempfile
 import threading
+from pathlib import Path
 
 import httpx
 
-from .config import endpoint_for, is_openai
+from .config import CODEX_EFFORTS, endpoint_for, is_openai
 
 
 class LLMError(RuntimeError):
@@ -88,6 +89,79 @@ class ClaudeCliClient(LLMClient):
                 return
 
 
+class CodexCliClient(LLMClient):
+    """Use the CLI's login and read only its final response, not progress output."""
+
+    label = "Codex CLI"
+
+    def __init__(self, cfg: dict, cancel: threading.Event | None = None):
+        super().__init__(cancel)
+        cmd = cfg.get("command") or "codex"
+        self.exe = shutil.which(cmd) or cmd
+        self.model = cfg.get("model") or ""
+        self.reasoning_effort = cfg.get("reasoning_effort") or ""
+        if self.reasoning_effort not in ("", *CODEX_EFFORTS):
+            raise LLMError("지원하지 않는 Codex 추론 강도입니다.")
+        self.timeout = float(cfg.get("timeout_s") or 300)
+
+    def complete(self, system: str, user: str) -> str:
+        if self.cancel.is_set():
+            raise Cancelled()
+        # Isolate concurrent calls and omit user/project configuration and tools.
+        with tempfile.TemporaryDirectory(prefix="kv-codex-") as workdir:
+            output = Path(workdir) / "response.txt"
+            args = [self.exe, "--ask-for-approval", "never", "exec",
+                    "--ignore-user-config", "--skip-git-repo-check", "--ephemeral",
+                    "--sandbox", "read-only", "--color", "never",
+                    "-c", "features.shell_tool=false", "-c", 'web_search="disabled"',
+                    "-c", "project_doc_max_bytes=0", "--output-last-message", str(output)]
+            if self.model:
+                args += ["--model", self.model]
+            if self.reasoning_effort:
+                args += ["-c", f'model_reasoning_effort="{self.reasoning_effort}"']
+            args.append("-")
+            flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            try:
+                proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        cwd=workdir, encoding="utf-8", errors="replace", creationflags=flags)
+            except OSError as e:
+                raise LLMError(f"codex 실행 파일을 찾지 못했습니다 ({self.exe}): {e}") from e
+            finished = threading.Event()
+
+            def watch_cancel():
+                while not finished.wait(0.1):
+                    if self.cancel.is_set():
+                        if proc.poll() is None:
+                            proc.kill()
+                        return
+
+            watcher = threading.Thread(target=watch_cancel, daemon=True)
+            watcher.start()
+            try:
+                out, err = proc.communicate(
+                    f"{system}\n\n도구를 사용하지 말고 요청한 결과만 답하세요.\n\n{user}", timeout=self.timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                if self.cancel.is_set():
+                    raise Cancelled()
+                raise LLMError(f"codex 응답 시간 초과 ({self.timeout:.0f}초)")
+            finally:
+                finished.set()
+                watcher.join()
+            if self.cancel.is_set():
+                raise Cancelled()
+            if proc.returncode != 0:
+                raise LLMError(f"codex 종료 코드 {proc.returncode}: {(err or out or '').strip()[-800:]}")
+            try:
+                text = output.read_text(encoding="utf-8").strip()
+            except OSError as e:
+                raise LLMError("codex 최종 응답 파일을 읽지 못했습니다. Codex CLI 버전을 확인하세요.") from e
+            if not text:
+                raise LLMError("codex가 빈 응답을 반환했습니다.")
+            return text
+
+
 class OpenAIClient(LLMClient):
     label = "OpenAI 호환"
 
@@ -142,6 +216,8 @@ class OpenAIClient(LLMClient):
 def make_client(mode: str, settings: dict, cancel: threading.Event | None = None) -> LLMClient:
     if mode == "claude_cli":
         return ClaudeCliClient(settings["claude"], cancel)
+    if mode == "codex_cli":
+        return CodexCliClient(settings.get("codex", {}), cancel)
     if is_openai(mode):
         ep = endpoint_for(mode, settings)
         if ep is None:

@@ -136,7 +136,9 @@ def list_pages(out: Path) -> list[dict]:
             "category": rel.parent.as_posix().strip("."),
             "title": meta.get("title") or p.stem,
             "mode": meta.get("mode"),
+            "mode_label": meta.get("mode_label"),
             "model": meta.get("model"),
+            "reasoning_effort": meta.get("reasoning_effort", ""),
             "generated_at": meta.get("generated_at"),
             "source_path": src,
             "source_root": meta.get("source_root"),
@@ -147,6 +149,15 @@ def list_pages(out: Path) -> list[dict]:
             "history": history_count(out, rel.as_posix()),
             "figures": meta.get("figures") or {},
         })
+    groups: dict[tuple, list[dict]] = {}
+    for page in pages:
+        if page["source_path"]:
+            key = (page["category"], Path(page["source_path"]).resolve())
+            groups.setdefault(key, []).append({k: page[k] for k in (
+                "rel", "mode", "mode_label", "model", "reasoning_effort", "generated_at")})
+    for page in pages:
+        key = (page["category"], Path(page["source_path"]).resolve()) if page["source_path"] else None
+        page["versions"] = groups.get(key, [])
     return pages
 
 

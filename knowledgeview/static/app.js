@@ -4,7 +4,7 @@
   const $$ = (s, c) => Array.from((c || document).querySelectorAll(s));
   const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const view = $("#view");
-  const MODE_SHORT = { none: "구조화", claude_cli: "Claude CLI", openai: "OpenAI 호환" };
+  const MODE_SHORT = { none: "구조화", claude_cli: "Claude CLI", codex_cli: "Codex CLI", openai: "OpenAI 호환" };
   function modeShort(mode) {
     if (MODE_SHORT[mode]) return MODE_SHORT[mode];
     const m = status && status.modes.find((x) => x.id === mode);
@@ -135,7 +135,12 @@
   function cardHtml(p) {
     const href = "/view/" + p.rel.split("/").map(encodeURIComponent).join("/");
     const nfig = Object.values(p.figures || {}).reduce((x, y) => x + y, 0);
-    const badges = [`<span class="badge ${p.mode && p.mode !== "none" ? "llm" : ""}">${esc(modeShort(p.mode))}</span>`];
+    const versionName = (mode) => ({ claude_cli: "Claude 버전", codex_cli: "Codex 버전", none: "구조화 버전" }[mode] || modeShort(mode));
+    const badges = [`<span class="badge ${p.mode && p.mode !== "none" ? "llm" : ""}">${esc(versionName(p.mode))}</span>`];
+    if (p.model) badges.push(`<span class="badge" title="생성 모델">${esc(p.model)}</span>`);
+    if (p.reasoning_effort) badges.push(`<span class="badge">effort: ${esc(p.reasoning_effort)}</span>`);
+    const otherVersions = (p.versions || []).filter((v) => v.rel !== p.rel);
+    const versionLinks = otherVersions.map((v) => `<a class="btn sm" href="/view/${v.rel.split("/").map(encodeURIComponent).join("/")}" target="_blank" rel="noopener" title="${esc(v.model || "")}">${esc(versionName(v.mode))} 열기</a>`).join("");
     if (p.stale === true) badges.push('<span class="badge warn" title="원본 MD가 생성 후 바뀌었습니다">원본 변경됨</span>');
     if (p.stale === "missing") badges.push('<span class="badge err" title="원본 MD를 찾을 수 없습니다">원본 없음</span>');
     if (p.warnings && p.warnings.length) badges.push(`<span class="badge warn" title="${esc(p.warnings.join("\n"))}">경고 ${p.warnings.length}</span>`);
@@ -143,10 +148,11 @@
       <a class="t" href="${href}">${esc(p.title)}</a>
       <div class="row">${badges.join("")}</div>
       <div class="sub">${esc(catLabel(p.category))} · ${esc(fmtTime(p.generated_at))}<br><span title="${esc(p.source_path || "")}">원본: ${esc(p.source_rel || "-")}</span></div>
+      ${otherVersions.length ? `<div class="row"><span class="hint">같은 원본의 다른 버전:</span>${versionLinks}</div>` : ""}
       <div class="acts">
         <a class="btn sm" href="${href}">열기</a>
         <a class="btn sm" href="${href}" target="_blank" rel="noopener">새 탭</a>
-        <button class="btn sm" data-act="regen" data-rel="${esc(p.rel)}">재생성</button>
+        <button class="btn sm" data-act="regen" data-rel="${esc(p.rel)}">재생성 / 다른 버전</button>
         <button class="btn sm" data-act="move" data-rel="${esc(p.rel)}">이동</button>
         ${p.history ? `<button class="btn sm" data-act="history" data-rel="${esc(p.rel)}">이전 버전 ${p.history}</button>` : ""}
         ${nfig ? `<a class="btn sm" href="/api/pages/figures.zip?rel=${encodeURIComponent(p.rel)}" title="그림 ${nfig}개와 다이어그램 원본을 ZIP으로 받기">그림 내보내기</a>` : ""}
@@ -169,7 +175,7 @@
         toast("이동했습니다.");
       } else if (act === "regen") {
         await loadStatus();
-        const r = await ask("페이지 재생성", `<p class="hint">원본: ${esc(page.source_path || "")}</p>${modeRadios("mode", page.mode || status.default_mode)}<label class="row" style="margin-top:12px"><input type="checkbox" name="refresh"> LLM 결과 새로 받기 (캐시 무시)</label>`, "재생성");
+        const r = await ask("재생성 / 다른 버전 만들기", `<p class="hint">원본: ${esc(page.source_path || "")}</p><p>다른 방식을 고르면 별도 버전으로 저장합니다. 같은 방식은 해당 버전만 갱신하고 이전 결과를 이력에 보관합니다.</p>${modeRadios("mode", page.mode || status.default_mode)}<label class="row" style="margin-top:12px"><input type="checkbox" name="refresh"> LLM 결과 새로 받기 (캐시 무시)</label>`, "생성");
         if (!r) return;
         const mode = $$('#dlg input[name=mode]').find((i) => i.checked)?.value || status.modes.find((m) => m.available).id;
         await api("POST", "/api/pages/regenerate", { rels: [rel], mode, refresh: !!r.refresh });
@@ -226,7 +232,7 @@
       if (!root.exists) return `<div class="panel"><b>${esc(title)}</b> <span class="badge err">폴더 없음</span></div>`;
       return `<h3>${esc(title)} <span class="hint">(${root.files.length}개)</span></h3><div class="tree">` + Object.keys(groups).sort().map((d) =>
         `<details ${d === "" || Object.keys(groups).length <= 3 ? "open" : ""}><summary><input type="checkbox" class="grp" data-root="${root.index}" data-dir="${esc(d)}"> 📁 ${esc(d || "(루트)")} <span class="hint">${groups[d].length}</span></summary>` +
-        groups[d].map((f) => `<label class="file"><input type="checkbox" class="src" data-root="${root.index}" data-rel="${esc(f.rel)}" data-dir="${esc(d)}">
+        groups[d].map((f) => `<label class="file"><input type="checkbox" class="src" data-root="${root.index}" data-rel="${esc(f.rel)}" data-dir="${esc(d)}" data-modes="${esc(JSON.stringify(f.page_modes || []))}">
           <span class="name">${esc(f.rel.split("/").pop())}</span>
           ${f.pages.length ? `<span class="badge ok" title="${esc(f.pages.join("\n"))}">생성됨 ${f.pages.length}</span>` : ""}
           <span class="hint">${(f.size / 1024).toFixed(1)}KB</span></label>`).join("") + "</details>").join("") + "</div>";
@@ -237,6 +243,7 @@
         <h2>1. 상세화 방식</h2>
         ${modeRadios("mode", defMode)}
         <p class="hint">LLM 모드는 섹션마다 해설·예시·비유·주의점과 그림(웹 공개 이미지, 없으면 LLM이 그린 SVG)을 덧붙이고 요약·용어 사전·확인 문제를 만듭니다. 원문 내용은 그대로 유지됩니다. 설정은 <a href="#/settings">설정</a> 탭에서 바꿉니다.</p>
+        <p class="hint">같은 원본도 Claude 버전·Codex 버전 등 방식별로 따로 보관합니다. 같은 방식으로 다시 만들면 해당 버전만 갱신합니다.</p>
         <label class="row"><input type="checkbox" id="refresh"> LLM 결과 새로 받기 (캐시 무시. 끄면 같은 원문·설정의 이전 결과를 재사용)</label>
       </div>
       <div class="panel">
@@ -266,7 +273,8 @@
     boxes.forEach((b) => (b.onchange = sync));
     $$("input.grp").forEach((g) => { g.onclick = (e) => e.stopPropagation(); g.onchange = () => { boxes.filter((b) => b.dataset.root === g.dataset.root && b.dataset.dir === g.dataset.dir).forEach((b) => (b.checked = g.checked)); sync(); }; });
     $("#sel-none").onclick = () => { boxes.forEach((b) => (b.checked = false)); sync(); };
-    $("#sel-new").onclick = () => { boxes.forEach((b) => (b.checked = !b.closest(".file").querySelector(".badge.ok"))); sync(); };
+    $("#sel-new").textContent = "선택한 방식으로 아직 생성 안 한 문서";
+    $("#sel-new").onclick = () => { boxes.forEach((b) => (b.checked = !JSON.parse(b.dataset.modes).includes(chosenMode()))); sync(); };
     $("#cat-new").oninput = () => { $('input[name=catmode][value=fixed]').checked = true; };
     $("#cat-sel").onchange = () => { $('input[name=catmode][value=fixed]').checked = true; };
 
@@ -395,12 +403,12 @@
   }
 
   // ---------------------------------------------------------------- settings
-  function claudeStateHtml(c) {
+  function cliStateHtml(c, label = "Claude Code") {
     if (!c) return "";
     if (c.installed && c.logged_in !== false) {
       return `<span class="badge ok">설치됨 · 로그인됨${c.subscription ? " (" + esc(c.subscription) + ")" : ""}</span>`;
     }
-    return `<span class="badge warn">${c.installed ? "설치됨 · 로그인 안 됨" : "설치 안 됨"}</span> <span class="hint">${esc(c.note || "")} Claude Code 방식은 표시되지 않습니다.</span>`;
+    return `<span class="badge warn">${c.installed ? "설치됨 · 로그인 안 됨" : "설치 안 됨"}</span> <span class="hint">${esc(c.note || "")} ${esc(label)} 방식은 표시되지 않습니다.</span>`;
   }
 
   function epCard(ep) {
@@ -419,8 +427,12 @@
 
   async function renderSettings() {
     await loadStatus();
-    const [s, srv] = await Promise.all([api("GET", "/api/settings"), api("GET", "/api/server")]);
+    const [s, srv, modelData] = await Promise.all([api("GET", "/api/settings"), api("GET", "/api/server"),
+      api("GET", "/api/codex/models").catch(() => ({ models: [] }))]);
     const c = s.claude;
+    const cx = s.codex;
+    const codexModels = modelData.models;
+    const customCodexModel = !!cx.model && !codexModels.some((m) => m.id === cx.model);
     view.innerHTML = `
       <form id="sf">
       <div class="panel"><h2>폴더</h2>
@@ -450,14 +462,31 @@
         <div class="row"><label class="field"><span>섹션당 최대 그림 수</span><input type="number" min="0" max="5" name="images.max_per_section" value="${s.images.max_per_section}"></label>
         <label class="field"><span>웹 이미지 최대 크기(바이트)</span><input type="number" name="images.max_bytes" value="${s.images.max_bytes}"></label></div>
       </div>
-      <div class="panel"><h2>Claude Code CLI</h2>
+      <div class="panel" id="claude-settings" style="scroll-margin-top:80px"><h2>Claude Code CLI</h2>
         <p class="hint">이 서버 PC에 설치된 <code>claude</code>를 <code>claude -p</code>로 호출합니다(도구 비활성화). CLI에 로그인된 계정을 그대로 씁니다. 설치되어 있고 로그인되어 있을 때만 생성 방식에 나타납니다.</p>
-        <div class="row" style="margin-bottom:6px"><span id="claude-state">${claudeStateHtml(status.claude)}</span><button type="button" class="btn sm" id="claude-recheck">다시 확인</button></div>
+        <div class="row" style="margin-bottom:6px"><span id="claude-state">${cliStateHtml(status.claude)}</span><button type="button" class="btn sm" id="claude-recheck">다시 확인</button></div>
         <div class="row"><label class="field grow"><span>실행 파일</span><input type="text" name="claude.command" value="${esc(c.command)}"></label>
         <label class="field grow"><span>모델 (비우면 CLI 기본값, 예: sonnet, opus)</span><input type="text" name="claude.model" value="${esc(c.model)}"></label></div>
         <div class="row"><label class="field"><span>호출당 제한 시간(초)</span><input type="number" name="claude.timeout_s" value="${c.timeout_s}"></label>
         <label class="field"><span>동시 호출 수</span><input type="number" min="1" max="8" name="claude.concurrency" value="${c.concurrency}"></label></div>
         <button type="button" class="btn" id="test-claude">연결 확인</button> <span class="hint" id="test-claude_cli"></span>
+      </div>
+      <div class="panel" id="codex-settings" style="scroll-margin-top:80px"><h2>Codex CLI</h2>
+        <p class="hint">이 서버 PC의 <code>codex exec</code>와 CLI 로그인 계정을 사용합니다. 설치 후 <code>codex login</code>으로 로그인하면 생성 방식에 나타납니다. 문서 내용은 Codex로 전송됩니다.</p>
+        <div class="row" style="margin-bottom:6px"><span id="codex-state">${cliStateHtml(status.codex, "Codex CLI")}</span><button type="button" class="btn sm" id="codex-recheck">다시 확인</button></div>
+        <div class="row"><label class="field grow"><span>실행 파일</span><input type="text" name="codex.command" value="${esc(cx.command)}"></label>
+        <label class="field grow"><span>모델</span><select name="codex.model" id="codex-model">
+          <option value="" ${!cx.model ? "selected" : ""}>Codex 기본 모델</option>
+          ${codexModels.map((m) => `<option value="${esc(m.id)}" ${m.id === cx.model ? "selected" : ""}>${esc(m.label)} (${esc(m.id)})</option>`).join("")}
+          <option value="__custom__" ${customCodexModel ? "selected" : ""}>모델명 직접 입력…</option>
+        </select></label></div>
+        <label class="field" id="codex-custom-field" ${customCodexModel ? "" : "hidden"}><span>직접 입력할 모델명</span><input type="text" id="codex-custom-model" value="${esc(customCodexModel ? cx.model : "")}"></label>
+        <div class="row"><label class="field grow"><span>추론 강도 (effort)</span><select name="codex.reasoning_effort" id="codex-effort"></select></label>
+          <p class="hint grow">모델에 따라 지원하는 강도가 다릅니다. 높은 강도는 생성 시간이 더 걸릴 수 있습니다. 기본값은 Codex가 결정합니다.</p></div>
+        ${codexModels.length ? "" : '<p class="hint">모델 목록이 없습니다. 서버 PC에서 Codex를 한 번 실행한 뒤 화면을 새로고침하거나 모델명을 직접 입력하세요.</p>'}
+        <div class="row"><label class="field"><span>호출당 제한 시간(초)</span><input type="number" min="1" name="codex.timeout_s" value="${cx.timeout_s}"></label>
+        <label class="field"><span>동시 호출 수</span><input type="number" min="1" max="8" name="codex.concurrency" value="${cx.concurrency}"></label></div>
+        <button type="button" class="btn" id="test-codex">저장 후 연결 확인</button> <span class="hint" id="test-codex_cli"></span>
       </div>
       <div class="panel"><div class="row"><h2 class="grow" style="margin:0">OpenAI 호환 엔드포인트</h2><button type="button" class="btn sm" id="ep-add">+ 엔드포인트 추가</button></div>
         <p class="hint">vLLM, Ollama, LM Studio 등 <code>/v1/chat/completions</code>를 제공하는 서버를 여러 개 등록할 수 있습니다. 엔드포인트마다 생성 화면에 별도 방식으로 나타납니다. 추가·삭제는 저장해야 반영됩니다.</p>
@@ -472,8 +501,18 @@
       <div class="row"><button type="submit" class="btn primary">저장</button>${status.auth_required ? '<button type="button" class="btn" id="logout">관리 토큰 지우기</button>' : ""}<span class="hint">KnowledgeView ${esc(status.version)}</span></div>
       </form>`;
 
+    const syncCodexModel = (selectedEffort) => {
+      const selected = $("#codex-model").value;
+      $("#codex-custom-field").hidden = selected !== "__custom__";
+      const model = codexModels.find((m) => m.id === selected);
+      const levels = model && model.efforts.length ? model.efforts : ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+      $("#codex-effort").innerHTML = '<option value="">Codex 기본값</option>' + levels.map((level) =>
+        `<option value="${esc(level)}" ${level === selectedEffort ? "selected" : ""}>${esc(level)}</option>`).join("");
+    };
+    syncCodexModel(cx.reasoning_effort || "");
+    $("#codex-model").onchange = () => syncCodexModel($("#codex-effort").value);
     const collect = () => {
-      const f = $("#sf"), patch = { claude: {}, images: {} };
+      const f = $("#sf"), patch = { claude: {}, codex: {}, images: {} };
       const lines = (v) => v.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
       patch.source_roots = lines(f.source_roots.value);
       patch.skip_headings = lines(f.skip_headings.value);
@@ -486,10 +525,11 @@
         $$("[data-k]", card).forEach((el) => { ep[el.dataset.k] = el.type === "checkbox" ? el.checked : el.type === "number" ? Number(el.value) : el.value.trim(); });
         return ep;
       });
-      $$("[name^='claude.'],[name^='images.']", f).forEach((el) => {
+      $$("[name^='claude.'],[name^='codex.'],[name^='images.']", f).forEach((el) => {
         const [grp, key] = el.name.split(".");
         patch[grp][key] = el.type === "checkbox" ? el.checked : el.type === "number" ? Number(el.value) : el.value.trim();
       });
+      if (patch.codex.model === "__custom__") patch.codex.model = $("#codex-custom-model").value.trim();
       return patch;
     };
     $("#sf").onsubmit = async (e) => { e.preventDefault(); try { await api("PUT", "/api/settings", collect()); toast("저장했습니다."); renderSettings(); } catch (err) { toast(err.message, true); } };
@@ -511,7 +551,7 @@
       try {
         const st = await api("POST", "/api/claude/check");
         await loadStatus();
-        $("#claude-state").innerHTML = claudeStateHtml(st);
+        $("#claude-state").innerHTML = cliStateHtml(st);
         toast("다시 확인했습니다. 생성 방식 목록에 반영됩니다.");
       } catch (err) { $("#claude-state").textContent = "실패: " + err.message; }
     };
@@ -522,6 +562,27 @@
         const r = await api("POST", "/api/llm/test", { mode: "claude_cli" });
         out.textContent = `정상: "${r.reply}" ${r.model ? "(" + r.model + ")" : ""}`;
       } catch (err) { out.textContent = "실패: " + err.message; }
+    };
+    $("#codex-recheck").onclick = async () => {
+      $("#codex-state").textContent = "확인 중…";
+      try {
+        await api("PUT", "/api/settings", { codex: collect().codex });
+        const st = await api("POST", "/api/codex/check");
+        await loadStatus();
+        $("#codex-state").innerHTML = cliStateHtml(st, "Codex CLI");
+        toast("다시 확인했습니다. 생성 방식 목록에 반영됩니다.");
+      } catch (err) { $("#codex-state").textContent = "실패: " + err.message; }
+    };
+    $("#test-codex").onclick = async () => {
+      const out = $("#test-codex_cli"), btn = $("#test-codex");
+      out.textContent = "저장 후 확인 중…";
+      btn.disabled = true;
+      try {
+        await api("PUT", "/api/settings", { codex: collect().codex });
+        const r = await api("POST", "/api/llm/test", { mode: "codex_cli" });
+        out.textContent = `정상: "${r.reply}" ${r.model ? "(" + r.model + ")" : ""}`;
+      } catch (err) { out.textContent = "실패: " + err.message; }
+      finally { btn.disabled = false; }
     };
     const bindCard = (card) => {
       $(".ep-del", card).onclick = () => { card.remove(); toast("저장하면 삭제됩니다."); };
@@ -559,7 +620,10 @@
     try {
       if (tab === "generate") await renderGenerate();
       else if (tab === "jobs") await renderJobs();
-      else if (tab === "settings") await renderSettings();
+      else if (tab === "settings") {
+        await renderSettings();
+        if (location.hash === "#/settings/codex") $("#codex-settings").scrollIntoView();
+      }
       else {
         const m = location.hash.match(/^#\/library\/(.*)$/);
         await renderLibrary(m ? decodeURIComponent(m[1]) : undefined);

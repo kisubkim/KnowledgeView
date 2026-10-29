@@ -175,6 +175,7 @@ a.kv-dead-link{color:var(--muted);text-decoration:underline dotted}
           {% if info.category %}<span>{{ info.category }}</span><span>·</span>{% endif %}
           <span class="kv-badge{% if info.mode != "none" %} mode-llm{% endif %}">{{ info.mode_label }}</span>
           {% if info.model %}<span class="kv-badge">{{ info.model }}</span>{% endif %}
+          {% if info.reasoning_effort %}<span class="kv-badge">effort: {{ info.reasoning_effort }}</span>{% endif %}
         </div>
         <h1>{{ title }}</h1>
         {% if doc_meta %}

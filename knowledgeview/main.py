@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+import hashlib
 import socket
 from pathlib import Path
 from urllib.parse import quote
@@ -12,7 +13,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import __version__, claude_check, export, library
+from . import __version__, claude_check, codex_check, export, library
 from .config import (OPENAI_PREFIX, PACKAGE_DIR, Settings, admin_token, data_dir, install_config_path, mode_ids,
                      mode_label, port_overridden, save_install_config, server_address)
 from .generate import generate
@@ -42,6 +43,7 @@ def _run(job: Job) -> dict:
         settings=settings.get(), output_dir=settings.output_dir(), progress=progress, cancel=job.cancel,
         failures_dir=data_dir() / "llm_failures",
         cache=Cache(data_dir() / "cache", enabled=not job.refresh),
+        output_rel=job.output_rel,
     )
 
 
@@ -70,7 +72,12 @@ Admin = Depends(require_admin)
 
 @app.get("/", include_in_schema=False)
 def index():
-    return FileResponse(STATIC / "index.html", headers=NO_CACHE)
+    # Content-based URLs prevent browsers from reusing an older management UI.
+    text = (STATIC / "index.html").read_text(encoding="utf-8")
+    for name in ("app.js", "app.css"):
+        version = hashlib.sha256((STATIC / name).read_bytes()).hexdigest()[:16]
+        text = text.replace(f'/assets/{name}"', f'/assets/{name}?v={version}"')
+    return HTMLResponse(text, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/view/{rel:path}", include_in_schema=False)
@@ -102,10 +109,17 @@ def _claude_status(force: bool = False) -> dict:
     return claude_check.status(settings.get()["claude"]["command"] or "claude", force=force)
 
 
+def _codex_status(force: bool = False) -> dict:
+    return codex_check.status(settings.get()["codex"]["command"] or "codex", force=force)
+
+
 @app.get("/api/status")
 def status(request: Request):
     s = settings.get()
     claude = _claude_status()
+    codex = _codex_status()
+    codex_modes = [{"id": "codex_cli", "label": mode_label("codex_cli"), "available": True,
+                    "note": codex["path"]}] if codex_check.usable(codex) else []
     # The Claude Code mode is offered only when the CLI is installed and logged in.
     claude_modes = [{"id": "claude_cli", "label": mode_label("claude_cli"), "available": True,
                      "note": claude["path"] + (f" · {claude['subscription']}" if claude.get("subscription") else "")}]         if claude_check.usable(claude) else []
@@ -116,9 +130,10 @@ def status(request: Request):
         "local": _is_local(request),
         "exit_action": s.get("exit_action", "ask"),
         "claude": {k: claude.get(k) for k in ("installed", "logged_in", "auth_method", "subscription", "note")},
+        "codex": {k: codex.get(k) for k in ("installed", "logged_in", "note")},
         "modes": [
             {"id": "none", "label": mode_label("none"), "available": True, "note": ""},
-        ] + claude_modes + [
+        ] + claude_modes + codex_modes + [
             {"id": OPENAI_PREFIX + ep["id"], "label": mode_label(OPENAI_PREFIX + ep["id"], s),
              "available": bool(ep["base_url"] and ep["model"]),
              "note": f"{ep['base_url']} · {ep['model']}" if ep["base_url"] and ep["model"] else "Base URL 또는 모델 미설정"}
@@ -132,6 +147,17 @@ def status(request: Request):
 def claude_recheck():
     st = _claude_status(force=True)
     return {k: st.get(k) for k in ("installed", "logged_in", "auth_method", "subscription", "note")}
+
+
+@app.post("/api/codex/check", dependencies=[Admin])
+def codex_recheck():
+    st = _codex_status(force=True)
+    return {k: st.get(k) for k in ("installed", "logged_in", "note")}
+
+
+@app.get("/api/codex/models", dependencies=[Admin])
+def codex_models():
+    return {"models": codex_check.models()}
 
 
 class ExitBody(BaseModel):
@@ -324,8 +350,12 @@ def regenerate(body: RegenBody):
             raise HTTPException(400, f"원본 MD를 찾을 수 없습니다: {rel}")
         mode = _check_mode(body.mode or meta.get("mode") or settings.get()["default_mode"])
         category = Path(rel).parent.as_posix().strip(".")
+        previous_mode = meta.get("mode")
+        if previous_mode == "openai":
+            eps = settings.get()["openai_endpoints"]
+            previous_mode = OPENAI_PREFIX + eps[0]["id"] if eps else previous_mode
         created.append(_submit(Path(src), Path(root or Path(src).parent), meta.get("source_rel") or Path(src).name, category, mode,
-                               body.refresh))
+                               body.refresh, output_rel=rel if mode == previous_mode else None))
     return {"jobs": created}
 
 
@@ -373,14 +403,17 @@ def delete_page_history(rel: str, version: str | None = None):
 def get_sources():
     roots = settings.source_roots()
     by_source: dict[str, list[str]] = {}
+    source_modes: dict[str, list[str]] = {}
     for p in library.list_pages(settings.output_dir()):
         if p["source_path"]:
             by_source.setdefault(str(Path(p["source_path"])), []).append(p["rel"])
+            source_modes.setdefault(str(Path(p["source_path"])), []).append(p["mode"])
     data = library.list_sources(roots)
     for entry in data:
         entry["is_uploads"] = entry["index"] == len(roots) - 1
         for f in entry["files"]:
             f["pages"] = by_source.get(f["path"], [])
+            f["page_modes"] = source_modes.get(f["path"], [])
             f["default_category"] = library.default_category(f["rel"])
     return {"roots": data}
 
@@ -398,6 +431,8 @@ class GenBody(BaseModel):
 
 
 def _check_mode(mode: str) -> str:
+    if mode == "codex_cli" and not codex_check.usable(_codex_status()):
+        raise HTTPException(400, "Codex CLI가 설치되어 있지 않거나 로그인되어 있지 않습니다. 다른 방식을 고르세요.")
     if mode == "claude_cli" and not claude_check.usable(_claude_status()):
         raise HTTPException(400, "Claude Code가 설치되어 있지 않거나 로그인되어 있지 않습니다. 다른 방식을 고르세요.")
     if mode == "openai":  # pages made before endpoints became a list
@@ -410,9 +445,11 @@ def _check_mode(mode: str) -> str:
     return mode
 
 
-def _submit(src: Path, root: Path, label: str, category: str, mode: str, refresh: bool = False) -> dict:
+def _submit(src: Path, root: Path, label: str, category: str, mode: str, refresh: bool = False,
+            output_rel: str | None = None) -> dict:
     category = clean_rel(category).as_posix().strip(".")
-    job = Job(source_path=src, source_root=root, source_label=label, category=category, mode=mode, refresh=refresh)
+    job = Job(source_path=src, source_root=root, source_label=label, category=category, mode=mode,
+              refresh=refresh, output_rel=output_rel)
     return jobs.submit(job).to_dict()
 
 

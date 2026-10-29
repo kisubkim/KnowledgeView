@@ -91,3 +91,4 @@ dialog h3{margin:0 0 12px}
 @media (max-width:860px){.split{grid-template-columns:1fr}.cats{position:static}.top{gap:10px;padding:10px 12px}main{padding:14px}}
 #dlg table th,#dlg table td{padding:7px 8px;border-bottom:1px solid var(--border);vertical-align:middle}
 #dlg{max-width:min(900px,96vw)}
+#codex-custom-field[hidden]{display:none}

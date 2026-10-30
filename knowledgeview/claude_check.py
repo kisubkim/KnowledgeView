@@ -62,3 +62,19 @@ def status(command: str = "claude", force: bool = False) -> dict:
 def usable(st: dict) -> bool:
     """Offer the mode when installed and logged in (or when login could not be determined)."""
     return bool(st.get("installed")) and st.get("logged_in") is not False
+
+
+# Claude Code keeps no local model cache (unlike Codex), so the choices are the CLI's model
+# aliases, which always resolve to the latest model of each family. Any other name can be typed.
+MODELS = [
+    {"id": "opus", "label": "Opus (최신)", "note": ""},
+    {"id": "sonnet", "label": "Sonnet (최신)", "note": ""},
+    {"id": "haiku", "label": "Haiku (최신)", "note": "빠르고 가벼움"},
+    {"id": "fable", "label": "Fable (최신)", "note": "계정에 따라 사용 크레딧이 필요함"},
+]
+
+
+def models() -> list[dict]:
+    from .config import CLAUDE_EFFORTS
+
+    return [{**m, "efforts": list(CLAUDE_EFFORTS)} for m in MODELS]

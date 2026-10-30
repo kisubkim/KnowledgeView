@@ -9,7 +9,6 @@ Modes:
 
 from __future__ import annotations
 
-import json
 import hashlib
 import os
 import posixpath
@@ -24,7 +23,7 @@ from . import cache as cache_mod
 from . import figures, mdparse, prompts
 from .config import endpoint_for, mode_label
 from .library import PathError, archive_page, clean_rel, default_category, join_inside, read_meta, sha256_of
-from .llm import Cancelled, LLMClient, LLMError, make_client
+from .llm import Cancelled, LLMClient, LLMError, make_client, parse_json_object, strip_reasoning
 from .mdparse import Document, iter_unfenced
 from .render import build_page
 
@@ -39,7 +38,7 @@ def _noop(done: int, total: int, msg: str) -> None:
 
 
 def _strip_llm_wrapping(text: str) -> str:
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
+    text = strip_reasoning(text).strip()
     m = re.match(r"^```(?:markdown|md)?\s*\n(.*)\n```\s*$", text, re.S)
     if m:
         text = m.group(1)
@@ -79,15 +78,17 @@ def validate_section(original: str, enriched: str) -> str | None:
         return f"원문 제목 누락: {missing[0]}"
     if len(enriched) < len(original) * 0.9:
         return "응답이 원문보다 짧음 (원문 일부 누락 의심)"
+    # The contract is "original text untouched": every original line must survive. The length
+    # check alone missed whole table rows and code lines (added callouts made up the length).
+    kept = {line.strip() for line in enriched.split("\n")}
+    lost = [line.strip() for line in original.split("\n") if line.strip() and line.strip() not in kept]
+    if lost:
+        return f"원문 {len(lost)}줄 누락: {lost[0][:60]}"
     return None
 
 
 def _parse_overview(text: str) -> dict:
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
-    a, b = text.find("{"), text.rfind("}")
-    if a < 0 or b <= a:
-        raise ValueError("JSON을 찾지 못함")
-    raw = json.loads(text[a:b + 1])
+    raw = parse_json_object(text)
     out: dict = {}
     if isinstance(raw.get("summary"), str):
         out["summary"] = raw["summary"].strip()
@@ -240,8 +241,12 @@ def generate(
     else:
         client = client or make_client(mode, settings, cancel)
         model = client.model or ("기본 모델" if mode in ("claude_cli", "codex_cli") else "")
-        reasoning_effort = getattr(client, "reasoning_effort", "") if mode == "codex_cli" else ""
-        cache_model = {"model": client.model, "reasoning_effort": reasoning_effort} if mode == "codex_cli" else client.model
+        reasoning_effort = getattr(client, "reasoning_effort", "") if mode in ("codex_cli", "claude_cli") else ""
+        if mode == "codex_cli" or (mode == "claude_cli" and reasoning_effort):
+            cache_model = {"model": client.model, "reasoning_effort": reasoning_effort}
+        else:
+            # Claude without an effort keeps its old key, so caches made before effort existed still hit.
+            cache_model = client.model
         if mode in ("claude_cli", "codex_cli"):
             cfg = settings.get("claude" if mode == "claude_cli" else "codex", {})
         else:
@@ -272,7 +277,8 @@ def generate(
                                                total=len(doc.sections), section=sec.markdown)
             ckey = cache_mod.key("section", mode, cache_model, section_system, user)
             cached = cache.get("sections", ckey)
-            if isinstance(cached, str):
+            # Cached answers are re-validated: entries saved before a validation fix may be damaged.
+            if isinstance(cached, str) and validate_section(sec.markdown, cached) is None:
                 sections_md[i] = cached
                 flags[i] = {"enriched": True}
                 tick(f"섹션 완료(캐시): {sec.heading}")
@@ -310,11 +316,15 @@ def generate(
                 overview = cached
                 tick("개요 완료(캐시)")
                 return
+            raw = ""
             try:
-                overview = _parse_overview(client.complete(prompts.OVERVIEW_SYSTEM, user))
+                raw = client.complete(prompts.OVERVIEW_SYSTEM, user)
+                overview = _parse_overview(raw)
                 cache.put("overview", ckey, overview)
                 tick("개요(요약·용어 사전·확인 문제) 완료")
             except (LLMError, ValueError) as e:
+                if raw:
+                    _save_failure(failures_dir, source_path.stem + "_overview", -1, str(e), raw)
                 overview = heuristic_overview(doc)
                 warnings.append(f"개요 생성 실패: {e}")
                 tick(f"개요 생성 실패: {e}")

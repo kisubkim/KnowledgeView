@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -11,7 +13,35 @@ from pathlib import Path
 
 import httpx
 
-from .config import CODEX_EFFORTS, endpoint_for, is_openai
+from .config import CLAUDE_EFFORTS, CODEX_EFFORTS, endpoint_for, is_openai
+
+_LEADING_THINK = re.compile(r"^\s*<think>.*?</think>\s*", re.S)
+
+
+def strip_reasoning(text: str) -> str:
+    """Drop a reasoning model's <think>...</think> block, but only when it opens the answer.
+
+    Removing every <think>...</think> pair also deleted document content: notes about
+    reasoning models quote these tags, so the cut ran from one quoted tag to the next."""
+    return _LEADING_THINK.sub("", text, count=1)
+
+
+def parse_json_object(text: str) -> dict:
+    """The first JSON object in an LLM answer; tolerates a preamble and trailing text."""
+    text = strip_reasoning(text).strip()
+    m = re.match(r"^```(?:json)?\s*\n(.*?)\n```\s*$", text, re.S)
+    if m:
+        text = m.group(1).strip()
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        start = text.find("{")
+        if start < 0:
+            raise ValueError("JSON을 찾지 못함") from None
+        obj, _end = json.JSONDecoder().raw_decode(text, start)  # stops at the end of the object
+    if not isinstance(obj, dict):
+        raise ValueError("JSON 객체가 아님")
+    return obj
 
 
 class LLMError(RuntimeError):
@@ -43,6 +73,10 @@ class ClaudeCliClient(LLMClient):
         cmd = cfg.get("command") or "claude"
         self.exe = shutil.which(cmd) or cmd
         self.model = cfg.get("model") or ""
+        # Named like the Codex/OpenAI clients so generate() records it the same way.
+        self.reasoning_effort = cfg.get("effort") or ""
+        if self.reasoning_effort not in ("", *CLAUDE_EFFORTS):
+            raise LLMError(f"지원하지 않는 Claude effort입니다: {self.reasoning_effort}")
         self.timeout = float(cfg.get("timeout_s") or 900)
         # An empty working dir keeps project CLAUDE.md files out of the prompt.
         self.workdir = tempfile.mkdtemp(prefix="kv-claude-")
@@ -56,6 +90,8 @@ class ClaudeCliClient(LLMClient):
                 "--system-prompt", system]
         if self.model:
             args += ["--model", self.model]
+        if self.reasoning_effort:
+            args += ["--effort", self.reasoning_effort]
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         try:
             proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

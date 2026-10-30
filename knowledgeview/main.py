@@ -155,6 +155,11 @@ def codex_recheck():
     return {k: st.get(k) for k in ("installed", "logged_in", "note")}
 
 
+@app.get("/api/claude/models", dependencies=[Admin])
+def claude_models():
+    return {"models": claude_check.models()}
+
+
 @app.get("/api/codex/models", dependencies=[Admin])
 def codex_models():
     return {"models": codex_check.models()}

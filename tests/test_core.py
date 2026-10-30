@@ -302,3 +302,129 @@ def test_all_modules_import():
         if name.endswith("__main__"):
             continue
         importlib.import_module(name)
+
+
+THINK_DOC = """# 추론 모델
+
+## 1. 사고 포맷
+
+| 모델 | 포맷 |
+|---|---|
+| **Qwen QwQ** | `<think>...</think>` |
+| **DeepSeek R1** | `<think>...</think>` |
+
+```
+<think>
+사용자가 덧셈을 요청했다.
+</think>
+579입니다.
+```
+"""
+
+
+def test_strip_reasoning_and_json_keep_quoted_think_tags():
+    """Notes about reasoning models quote <think> tags; only a leading reasoning block is removed."""
+    from knowledgeview.generate import _parse_overview
+    from knowledgeview.llm import parse_json_object, strip_reasoning
+    body = "| `<think>...</think>` | 표 |\n<think>\n본문 예시\n</think>"
+    assert strip_reasoning(body) == body
+    assert strip_reasoning("<think>모델의 생각</think>\n\n답변") == "답변"
+    answer = ('{"summary": "추론 모델은 <think> 태그로 사고를 구분하고 </think>로 닫는다.", '
+              '"glossary": [{"term": "<think>", "desc": "사고 구간 시작"}], "quiz": []}')
+    ov = _parse_overview(answer)
+    assert "<think>" in ov["summary"] and ov["glossary"][0]["term"] == "<think>"
+    # A preamble and trailing text ("Extra data") around the object are tolerated.
+    assert parse_json_object("결과입니다:\n" + answer + "\n\n이상입니다. {끝}")["summary"] == ov["summary"]
+    assert parse_json_object("<think>생각</think>```json\n" + answer + "\n```")["summary"] == ov["summary"]
+
+
+def test_validate_section_rejects_lost_original_lines():
+    orig = "## 1. 사고 포맷\n\n| 모델 | 포맷 |\n|---|---|\n| **Qwen QwQ** | `<think>` |\n| **DeepSeek R1** | `<think>` |\n" + "설명 " * 40
+    padded = "\n\n> [!DETAIL] 해설\n> " + "보강 " * 80
+    assert validate_section(orig, orig + padded) is None
+    lost = orig.replace("| **DeepSeek R1** | `<think>` |\n", "") + padded  # long enough to pass the 90% check
+    assert "원문 1줄 누락" in validate_section(orig, lost)
+
+
+def test_generate_keeps_think_content_and_rejects_damaged_cache(tmp_path):
+    from knowledgeview import cache as cache_mod, mdparse, prompts
+    from knowledgeview.cache import Cache
+    from knowledgeview.generate import _outline
+    root = tmp_path / "src"
+    root.mkdir()
+    p = root / "think.md"
+    p.write_text(THINK_DOC, encoding="utf-8")
+    cache = Cache(tmp_path / "cache")
+    # A section cached by the old code, with the quoted-tag span cut out.
+    doc = mdparse.parse(THINK_DOC, "think")
+    sec = doc.sections[0]
+    user = prompts.SECTION_USER.format(title=doc.title, outline=_outline(doc), index=1, total=1, section=sec.markdown)
+    key = cache_mod.key("section", "openai", "fake", prompts.SECTION_SYSTEM, user)
+    damaged = sec.markdown.split("| **Qwen QwQ**")[0] + "\n> [!DETAIL] 해설\n> " + "보강 " * 200
+    cache.put("sections", key, damaged)
+
+    llm = FakeLLM()
+    res = generate(source_path=p, source_root=root, category="", mode="openai", settings=SETTINGS,
+                   output_dir=tmp_path / "out", client=llm, cache=cache)
+    assert llm.sections_seen == ["## 1. 사고 포맷"]  # damaged cache entry was not reused
+    html = (tmp_path / "out" / "think.html").read_text(encoding="utf-8")
+    assert "DeepSeek R1" in html and html.count("&lt;think&gt;") >= 3
+    assert not res["warnings"]
+
+
+def test_claude_model_and_effort_settings(tmp_path, monkeypatch):
+    from knowledgeview import claude_check, llm
+    from knowledgeview.config import Settings
+    s = Settings(tmp_path / "settings.json")
+    s.update({"claude": {"model": "opus", "effort": "high"}})
+    assert s.get()["claude"]["effort"] == "high"
+    with pytest.raises(ValueError):
+        s.update({"claude": {"effort": "bogus"}})  # the CLI itself would silently accept it
+    assert {m["id"] for m in claude_check.models()} >= {"opus", "sonnet", "haiku"}
+    assert claude_check.models()[0]["efforts"] == ["low", "medium", "high", "xhigh", "max"]
+
+    seen = {}
+
+    class FakeProc:
+        returncode = 0
+
+        def __init__(self, args, **kw):
+            seen["args"] = args
+
+        def communicate(self, data=None, timeout=None):
+            return "답", ""
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(llm.subprocess, "Popen", FakeProc)
+    client = llm.ClaudeCliClient({"command": "claude", "model": "opus", "effort": "xhigh"})
+    assert client.complete("s", "u") == "답"
+    args = seen["args"]
+    assert args[args.index("--model") + 1] == "opus" and args[args.index("--effort") + 1] == "xhigh"
+    llm.ClaudeCliClient({"command": "claude"}).complete("s", "u")
+    assert "--effort" not in seen["args"]
+    with pytest.raises(llm.LLMError):
+        llm.ClaudeCliClient({"command": "claude", "effort": "bogus"})
+
+
+def test_claude_effort_recorded_and_cache_key_kept_without_effort(tmp_path):
+    from knowledgeview.cache import Cache
+    root, p = _write_source(tmp_path)
+    cache = Cache(tmp_path / "cache")
+    plain = FakeLLM()
+    generate(source_path=p, source_root=root, category="", mode="claude_cli", settings=SETTINGS,
+             output_dir=tmp_path / "out1", client=plain, cache=cache)
+    assert library.read_meta(tmp_path / "out1" / "sample.html").get("reasoning_effort", "") == ""
+    # Same model, no effort: everything comes from the cache (old keys keep working).
+    again = FakeLLM()
+    generate(source_path=p, source_root=root, category="", mode="claude_cli", settings=SETTINGS,
+             output_dir=tmp_path / "out2", client=again, cache=cache)
+    assert again.sections_seen == []
+    # With an effort the answer differs, so the cache is not reused and the page records it.
+    effort = FakeLLM()
+    effort.reasoning_effort = "high"
+    generate(source_path=p, source_root=root, category="", mode="claude_cli", settings=SETTINGS,
+             output_dir=tmp_path / "out3", client=effort, cache=cache)
+    assert effort.sections_seen
+    assert library.read_meta(tmp_path / "out3" / "sample.html")["reasoning_effort"] == "high"

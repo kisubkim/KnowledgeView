@@ -77,18 +77,44 @@
   }
 
   // ---------------------------------------------------------------- library
+  // One card per document: pages made from the same source in the same category (one per
+  // generation mode) are versions of it, shown as tabs on the card.
+  const MODE_ORDER = (mode) => (mode === "claude_cli" ? 0 : mode === "codex_cli" ? 1 : mode && mode.startsWith("openai") ? 2 : 3);
+  function groupPages(pages) {
+    const groups = new Map();
+    pages.forEach((p) => {
+      const key = p.category + "\u0000" + (p.source_path || p.rel);
+      if (!groups.has(key)) groups.set(key, { key, versions: [] });
+      groups.get(key).versions.push(p);
+    });
+    groups.forEach((g) => g.versions.sort((a, b) => MODE_ORDER(a.mode) - MODE_ORDER(b.mode) || a.rel.localeCompare(b.rel)));
+    return [...groups.values()];
+  }
+  function selectedVersion(g) {
+    let saved = null;
+    try { saved = localStorage.getItem("kv-ver:" + g.key); } catch (e) {}
+    return g.versions.find((v) => v.rel === saved)
+      || g.versions.reduce((a, b) => ((b.generated_at || "") > (a.generated_at || "") ? b : a));
+  }
+  function versionName(mode) {
+    return { claude_cli: "Claude", codex_cli: "Codex", none: "구조화" }[mode] || modeShort(mode);
+  }
+
   async function renderLibrary(cat) {
     const lib = await api("GET", "/api/library");
     const filterCat = cat === undefined ? null : cat;
     const q = (sessionStorage.getItem("kv-q") || "").toLowerCase();
-    let pages = lib.pages;
-    if (filterCat !== null) pages = pages.filter((p) => p.category === filterCat || p.category.startsWith(filterCat + "/"));
-    if (q) pages = pages.filter((p) => (p.title + " " + p.rel).toLowerCase().includes(q));
+    const allGroups = groupPages(lib.pages);
+    const inCat = (g, path) => { const c = g.versions[0].category; return c === path || (path && c.startsWith(path + "/")); };
+    let groups = allGroups;
+    if (filterCat !== null) groups = groups.filter((g) => inCat(g, filterCat));
+    if (q) groups = groups.filter((g) => g.versions.some((p) => (p.title + " " + p.rel).toLowerCase().includes(q)));
+    const pages = groups;  // the empty-state check below only needs the count
 
     const catItems = lib.categories.filter((c) => c.path !== "" || c.pages > 0).map((c) => {
       const depth = c.path ? c.path.split("/").length - 1 : 0;
       const name = c.path ? c.path.split("/").pop() : "(최상위)";
-      const total = lib.pages.filter((p) => p.category === c.path || (c.path && p.category.startsWith(c.path + "/"))).length;
+      const total = allGroups.filter((g) => inCat(g, c.path)).length;
       return `<li><a href="#/library/${encodeURIComponent(c.path)}" class="${filterCat === c.path ? "active" : ""}" style="padding-left:${10 + depth * 14}px"><span>${esc(name)}</span><span class="n">${total}</span></a></li>`;
     }).join("");
 
@@ -96,7 +122,7 @@
       <div class="split">
         <aside class="panel cats">
           <div class="head"><b>카테고리</b><button class="btn sm" id="cat-new">+ 새 카테고리</button></div>
-          <ul><li><a href="#/library" class="${filterCat === null ? "active" : ""}"><span>전체</span><span class="n">${lib.pages.length}</span></a></li>${catItems}</ul>
+          <ul><li><a href="#/library" class="${filterCat === null ? "active" : ""}"><span>전체</span><span class="n">${allGroups.length}</span></a></li>${catItems}</ul>
           ${filterCat ? `<div class="row" style="margin-top:12px"><button class="btn sm" id="cat-ren">이름 변경</button><button class="btn sm danger" id="cat-del">삭제</button></div>` : ""}
           <p class="hint" style="margin:14px 6px 0">출력 폴더: <code>${esc(lib.output_dir)}</code></p>
         </aside>
@@ -105,7 +131,7 @@
             <input type="search" id="q" class="grow" placeholder="제목/경로 검색" value="${esc(q)}">
             <a class="btn primary" href="#/generate">+ 페이지 생성</a>
           </div>
-          ${pages.length ? `<div class="cards">${pages.map(cardHtml).join("")}</div>` :
+          ${pages.length ? `<div class="cards" id="cards">${groups.map((g, i) => cardHtml(g, i)).join("")}</div>` :
             `<div class="panel empty">${lib.pages.length ? "조건에 맞는 페이지가 없습니다." : "아직 생성된 페이지가 없습니다. <a href='#/generate'>생성</a> 탭에서 MD 파일을 골라 만드세요."}</div>`}
         </section>
       </div>`;
@@ -129,26 +155,42 @@
         try { await api("DELETE", `/api/categories?path=${encodeURIComponent(filterCat)}&force=true`); toast("삭제했습니다."); location.hash = "#/library"; } catch (e) { toast(e.message, true); }
       };
     }
-    $$("[data-act]").forEach((b) => (b.onclick = () => pageAction(b.dataset.act, b.dataset.rel, lib)));
+    const cards = $("#cards");
+    if (cards) {
+      cards.addEventListener("click", (e) => {
+        const tab = e.target.closest("[data-ver]");
+        if (tab) {
+          const idx = Number(tab.closest(".card").dataset.group);
+          try { localStorage.setItem("kv-ver:" + groups[idx].key, tab.dataset.ver); } catch (err) {}
+          tab.closest(".card").outerHTML = cardHtml(groups[idx], idx);
+          return;
+        }
+        const act = e.target.closest("[data-act]");
+        if (act) pageAction(act.dataset.act, act.dataset.rel, lib, groups[Number(act.closest(".card").dataset.group)]);
+      });
+    }
   }
 
-  function cardHtml(p) {
+  function cardHtml(g, idx) {
+    const p = selectedVersion(g);
     const href = "/view/" + p.rel.split("/").map(encodeURIComponent).join("/");
     const nfig = Object.values(p.figures || {}).reduce((x, y) => x + y, 0);
-    const versionName = (mode) => ({ claude_cli: "Claude 버전", codex_cli: "Codex 버전", none: "구조화 버전" }[mode] || modeShort(mode));
-    const badges = [`<span class="badge ${p.mode && p.mode !== "none" ? "llm" : ""}">${esc(versionName(p.mode))}</span>`];
+    const tabs = g.versions.map((v) => {
+      const flag = (v.warnings && v.warnings.length) || v.stale ? " ⚠" : "";
+      const tip = [v.mode_label || modeShort(v.mode), v.model, v.reasoning_effort && "effort " + v.reasoning_effort, fmtTime(v.generated_at)].filter(Boolean).join(" · ");
+      return `<button type="button" class="vtab${v.rel === p.rel ? " on" : ""}" data-ver="${esc(v.rel)}" aria-pressed="${v.rel === p.rel}" title="${esc(tip)}">${esc(versionName(v.mode))}${flag}</button>`;
+    }).join("");
+    const badges = [];
     if (p.model) badges.push(`<span class="badge" title="생성 모델">${esc(p.model)}</span>`);
     if (p.reasoning_effort) badges.push(`<span class="badge">effort: ${esc(p.reasoning_effort)}</span>`);
-    const otherVersions = (p.versions || []).filter((v) => v.rel !== p.rel);
-    const versionLinks = otherVersions.map((v) => `<a class="btn sm" href="/view/${v.rel.split("/").map(encodeURIComponent).join("/")}" target="_blank" rel="noopener" title="${esc(v.model || "")}">${esc(versionName(v.mode))} 열기</a>`).join("");
     if (p.stale === true) badges.push('<span class="badge warn" title="원본 MD가 생성 후 바뀌었습니다">원본 변경됨</span>');
     if (p.stale === "missing") badges.push('<span class="badge err" title="원본 MD를 찾을 수 없습니다">원본 없음</span>');
     if (p.warnings && p.warnings.length) badges.push(`<span class="badge warn" title="${esc(p.warnings.join("\n"))}">경고 ${p.warnings.length}</span>`);
-    return `<article class="card">
+    return `<article class="card" data-group="${idx}">
       <a class="t" href="${href}">${esc(p.title)}</a>
-      <div class="row">${badges.join("")}</div>
+      <div class="vtabs" role="group" aria-label="생성 방식별 버전">${tabs}</div>
+      ${badges.length ? `<div class="row">${badges.join("")}</div>` : ""}
       <div class="sub">${esc(catLabel(p.category))} · ${esc(fmtTime(p.generated_at))}<br><span title="${esc(p.source_path || "")}">원본: ${esc(p.source_rel || "-")}</span></div>
-      ${otherVersions.length ? `<div class="row"><span class="hint">같은 원본의 다른 버전:</span>${versionLinks}</div>` : ""}
       <div class="acts">
         <a class="btn sm" href="${href}">열기</a>
         <a class="btn sm" href="${href}" target="_blank" rel="noopener">새 탭</a>
@@ -160,18 +202,20 @@
       </div></article>`;
   }
 
-  async function pageAction(act, rel, lib) {
+  async function pageAction(act, rel, lib, group) {
     const page = lib.pages.find((p) => p.rel === rel);
+    const siblings = group ? group.versions : [page];
     try {
       if (act === "history") return showHistory(page);
       if (act === "del") {
-        if (!(await ask("페이지 삭제", `<p><b>${esc(page.title)}</b> 페이지(HTML)를 삭제합니다.${page.history ? ` 이전 버전 ${page.history}개도 함께 삭제됩니다.` : ""} 원본 MD는 그대로 둡니다.</p>`, "삭제"))) return;
+        const others = siblings.length - 1;
+        if (!(await ask("버전 삭제", `<p><b>${esc(page.title)}</b>의 <b>${esc(versionName(page.mode))}</b> 버전(HTML)을 삭제합니다.${page.history ? ` 이 버전의 이전 기록 ${page.history}개도 함께 삭제됩니다.` : ""}${others ? ` 다른 버전 ${others}개는 그대로 남습니다.` : ""} 원본 MD는 그대로 둡니다.</p>`, "삭제"))) return;
         await api("DELETE", "/api/pages?rel=" + encodeURIComponent(rel));
         toast("삭제했습니다.");
       } else if (act === "move") {
-        const r = await ask("다른 카테고리로 이동", `<label class="field"><span>기존 카테고리</span><select name="cat">${categoryOptions(lib.categories, page.category)}</select></label><label class="field"><span>또는 새 카테고리 (입력하면 우선)</span><input type="text" name="newcat" placeholder="예: AI/LLM"></label>`, "이동");
+        const r = await ask("다른 카테고리로 이동", `<p class="hint">이 문서의 버전 ${siblings.length}개(${siblings.map((v) => esc(versionName(v.mode))).join(", ")})를 함께 옮깁니다.</p><label class="field"><span>기존 카테고리</span><select name="cat">${categoryOptions(lib.categories, page.category)}</select></label><label class="field"><span>또는 새 카테고리 (입력하면 우선)</span><input type="text" name="newcat" placeholder="예: AI/LLM"></label>`, "이동");
         if (!r) return;
-        await api("POST", "/api/pages/move", { rel, category: r.newcat.trim() || r.cat });
+        for (const v of siblings) await api("POST", "/api/pages/move", { rel: v.rel, category: r.newcat.trim() || r.cat });
         toast("이동했습니다.");
       } else if (act === "regen") {
         await loadStatus();
@@ -427,9 +471,12 @@
 
   async function renderSettings() {
     await loadStatus();
-    const [s, srv, modelData] = await Promise.all([api("GET", "/api/settings"), api("GET", "/api/server"),
-      api("GET", "/api/codex/models").catch(() => ({ models: [] }))]);
+    const [s, srv, modelData, claudeModelData] = await Promise.all([api("GET", "/api/settings"), api("GET", "/api/server"),
+      api("GET", "/api/codex/models").catch(() => ({ models: [] })),
+      api("GET", "/api/claude/models").catch(() => ({ models: [] }))]);
     const c = s.claude;
+    const claudeModels = claudeModelData.models;
+    const customClaudeModel = !!c.model && !claudeModels.some((m) => m.id === c.model);
     const cx = s.codex;
     const codexModels = modelData.models;
     const customCodexModel = !!cx.model && !codexModels.some((m) => m.id === cx.model);
@@ -466,10 +513,17 @@
         <p class="hint">이 서버 PC에 설치된 <code>claude</code>를 <code>claude -p</code>로 호출합니다(도구 비활성화). CLI에 로그인된 계정을 그대로 씁니다. 설치되어 있고 로그인되어 있을 때만 생성 방식에 나타납니다.</p>
         <div class="row" style="margin-bottom:6px"><span id="claude-state">${cliStateHtml(status.claude)}</span><button type="button" class="btn sm" id="claude-recheck">다시 확인</button></div>
         <div class="row"><label class="field grow"><span>실행 파일</span><input type="text" name="claude.command" value="${esc(c.command)}"></label>
-        <label class="field grow"><span>모델 (비우면 CLI 기본값, 예: sonnet, opus)</span><input type="text" name="claude.model" value="${esc(c.model)}"></label></div>
-        <div class="row"><label class="field"><span>호출당 제한 시간(초)</span><input type="number" name="claude.timeout_s" value="${c.timeout_s}"></label>
+        <label class="field grow"><span>모델</span><select name="claude.model" id="claude-model">
+          <option value="" ${!c.model ? "selected" : ""}>Claude Code 기본 모델</option>
+          ${claudeModels.map((m) => `<option value="${esc(m.id)}" ${m.id === c.model ? "selected" : ""}>${esc(m.label)} (${esc(m.id)})${m.note ? " · " + esc(m.note) : ""}</option>`).join("")}
+          <option value="__custom__" ${customClaudeModel ? "selected" : ""}>모델명 직접 입력…</option>
+        </select></label></div>
+        <label class="field" id="claude-custom-field" ${customClaudeModel ? "" : "hidden"}><span>직접 입력할 모델명 (예: claude-opus-5-5)</span><input type="text" id="claude-custom-model" value="${esc(customClaudeModel ? c.model : "")}"></label>
+        <div class="row"><label class="field grow"><span>추론 강도 (effort)</span><select name="claude.effort" id="claude-effort"></select></label>
+          <p class="hint grow">별칭(opus, sonnet 등)은 항상 그 계열의 최신 모델을 씁니다. effort가 높을수록 더 깊이 생각하지만 생성 시간과 사용량이 늘어납니다. 기본값은 Claude Code가 정합니다.</p></div>
+        <div class="row"><label class="field"><span>호출당 제한 시간(초)</span><input type="number" min="1" name="claude.timeout_s" value="${c.timeout_s}"></label>
         <label class="field"><span>동시 호출 수</span><input type="number" min="1" max="8" name="claude.concurrency" value="${c.concurrency}"></label></div>
-        <button type="button" class="btn" id="test-claude">연결 확인</button> <span class="hint" id="test-claude_cli"></span>
+        <button type="button" class="btn" id="test-claude">저장 후 연결 확인</button> <span class="hint" id="test-claude_cli"></span>
       </div>
       <div class="panel" id="codex-settings" style="scroll-margin-top:80px"><h2>Codex CLI</h2>
         <p class="hint">이 서버 PC의 <code>codex exec</code>와 CLI 로그인 계정을 사용합니다. 설치 후 <code>codex login</code>으로 로그인하면 생성 방식에 나타납니다. 문서 내용은 Codex로 전송됩니다.</p>
@@ -510,6 +564,16 @@
         `<option value="${esc(level)}" ${level === selectedEffort ? "selected" : ""}>${esc(level)}</option>`).join("");
     };
     syncCodexModel(cx.reasoning_effort || "");
+    const syncClaudeModel = (selectedEffort) => {
+      const selected = $("#claude-model").value;
+      $("#claude-custom-field").hidden = selected !== "__custom__";
+      const model = claudeModels.find((m) => m.id === selected);
+      const levels = model && model.efforts.length ? model.efforts : ["low", "medium", "high", "xhigh", "max"];
+      $("#claude-effort").innerHTML = '<option value="">Claude Code 기본값</option>' + levels.map((level) =>
+        `<option value="${esc(level)}" ${level === selectedEffort ? "selected" : ""}>${esc(level)}</option>`).join("");
+    };
+    syncClaudeModel(c.effort || "");
+    $("#claude-model").onchange = () => syncClaudeModel($("#claude-effort").value);
     $("#codex-model").onchange = () => syncCodexModel($("#codex-effort").value);
     const collect = () => {
       const f = $("#sf"), patch = { claude: {}, codex: {}, images: {} };
@@ -530,6 +594,7 @@
         patch[grp][key] = el.type === "checkbox" ? el.checked : el.type === "number" ? Number(el.value) : el.value.trim();
       });
       if (patch.codex.model === "__custom__") patch.codex.model = $("#codex-custom-model").value.trim();
+      if (patch.claude.model === "__custom__") patch.claude.model = $("#claude-custom-model").value.trim();
       return patch;
     };
     $("#sf").onsubmit = async (e) => { e.preventDefault(); try { await api("PUT", "/api/settings", collect()); toast("저장했습니다."); renderSettings(); } catch (err) { toast(err.message, true); } };
@@ -556,12 +621,15 @@
       } catch (err) { $("#claude-state").textContent = "실패: " + err.message; }
     };
     $("#test-claude").onclick = async () => {
-      const out = $("#test-claude_cli");
-      out.textContent = "확인 중…";
+      const out = $("#test-claude_cli"), btn = $("#test-claude");
+      out.textContent = "저장 후 확인 중…";
+      btn.disabled = true;
       try {
+        await api("PUT", "/api/settings", { claude: collect().claude });
         const r = await api("POST", "/api/llm/test", { mode: "claude_cli" });
         out.textContent = `정상: "${r.reply}" ${r.model ? "(" + r.model + ")" : ""}`;
       } catch (err) { out.textContent = "실패: " + err.message; }
+      finally { btn.disabled = false; }
     };
     $("#codex-recheck").onclick = async () => {
       $("#codex-state").textContent = "확인 중…";

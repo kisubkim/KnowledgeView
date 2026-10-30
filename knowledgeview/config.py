@@ -26,6 +26,8 @@ DEFAULT_PORT = 8770
 
 BASE_MODES = ("none", "claude_cli", "codex_cli")
 CODEX_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+# `claude --effort` levels. The CLI accepts any string without complaint, so values are checked here.
+CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 OPENAI_PREFIX = "openai:"  # mode id of an OpenAI-compatible endpoint: "openai:<endpoint id>"
 
 DEFAULTS: dict[str, Any] = {
@@ -45,6 +47,7 @@ DEFAULTS: dict[str, Any] = {
     "claude": {
         "command": "claude",
         "model": "",
+        "effort": "",
         "timeout_s": 300,
         "concurrency": 3,
     },
@@ -245,6 +248,15 @@ class Settings:
                 raise ValueError("Codex 동시 호출 수는 1~8 사이여야 합니다.")
             if float(codex.get("timeout_s", 300)) <= 0:
                 raise ValueError("Codex 제한 시간은 0보다 커야 합니다.")
+            if not isinstance(new["claude"], dict):
+                raise ValueError("Claude 설정 형식이 잘못되었습니다.")
+            claude = new["claude"]
+            if claude.get("effort", "") not in ("", *CLAUDE_EFFORTS):
+                raise ValueError("지원하지 않는 Claude effort입니다.")
+            if not 1 <= int(claude.get("concurrency", 3)) <= 8:
+                raise ValueError("Claude 동시 호출 수는 1~8 사이여야 합니다.")
+            if float(claude.get("timeout_s", 300)) <= 0:
+                raise ValueError("Claude 제한 시간은 0보다 커야 합니다.")
             if isinstance(patch.get("openai_endpoints"), list):
                 new["openai_endpoints"] = _normalize_endpoints(patch["openai_endpoints"], self._data["openai_endpoints"])
             if new["default_mode"] not in mode_ids(new):

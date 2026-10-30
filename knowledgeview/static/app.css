@@ -92,3 +92,11 @@ dialog h3{margin:0 0 12px}
 #dlg table th,#dlg table td{padding:7px 8px;border-bottom:1px solid var(--border);vertical-align:middle}
 #dlg{max-width:min(900px,96vw)}
 #codex-custom-field[hidden]{display:none}
+/* Version tabs on a library card (one tab per generation mode of the same document) */
+.vtabs{display:inline-flex;flex-wrap:wrap;gap:0;border:1px solid var(--border);border-radius:9px;overflow:hidden;align-self:flex-start;background:var(--surface-2)}
+.vtab{border:0;border-right:1px solid var(--border);background:none;color:var(--muted);font:inherit;font-size:13px;padding:4px 12px;cursor:pointer}
+.vtab:last-child{border-right:0}
+.vtab:hover{color:var(--text);background:var(--surface)}
+.vtab.on{background:var(--accent);color:#fff;font-weight:600}
+/* The hidden attribute must win over component display rules (e.g. label.field{display:block}). */
+[hidden]{display:none !important}

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import base64
 import html
-import json
 import re
 import ssl
 import xml.etree.ElementTree as ET
@@ -25,7 +24,7 @@ from dataclasses import dataclass
 import httpx
 
 from . import prompts
-from .llm import LLMClient, LLMError
+from .llm import LLMClient, LLMError, parse_json_object, strip_reasoning
 
 COMMONS_API = "https://commons.wikimedia.org/w/api.php"
 USER_AGENT = "KnowledgeView/0.1 (local study-notes viewer; https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia)"
@@ -185,20 +184,12 @@ def download_data_uri(http: httpx.Client, url: str, max_bytes: int) -> str:
     return f"data:{mime};base64,{base64.b64encode(r.content).decode()}"
 
 
-def _json_obj(text: str) -> dict:
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
-    a, b = text.find("{"), text.rfind("}")
-    if a < 0 or b <= a:
-        raise ValueError("JSON을 찾지 못함")
-    return json.loads(text[a:b + 1])
-
-
 def choose_candidate(client: LLMClient, req: FigureRequest, cands: list[dict]) -> int | None:
     listing = "\n".join(
         f"{i}. {c['title']} ({c['size']}) — {c['description'] or '설명 없음'}" for i, c in enumerate(cands, 1)
     )
     user = prompts.FIGURE_PICK_USER.format(caption=req.caption, draw=req.draw, candidates=listing)
-    choice = _json_obj(client.complete(prompts.FIGURE_PICK_SYSTEM, user)).get("choice")
+    choice = parse_json_object(client.complete(prompts.FIGURE_PICK_SYSTEM, user)).get("choice")
     if isinstance(choice, int) and 1 <= choice <= len(cands):
         return choice - 1
     return None
@@ -208,7 +199,7 @@ def choose_candidate(client: LLMClient, req: FigureRequest, cands: list[dict]) -
 
 
 def sanitize_svg(text: str) -> str:
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
+    text = strip_reasoning(text)
     m = re.search(r"<svg\b.*</svg>", text, re.S | re.I)
     if not m:
         raise ValueError("SVG를 찾지 못함")
